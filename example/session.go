@@ -8,6 +8,11 @@ import (
 	"runtime/cgo"
 )
 
+//func TestPortAudio() {
+//	portaudio.Initialize()
+//	defer portaudio.Terminate()
+//}
+
 type Session struct {
 	localData    []byte
 	localOffset  int64
