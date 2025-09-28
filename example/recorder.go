@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"github.com/gordonklaus/portaudio"
 	"log"
 	"os"
@@ -79,5 +80,40 @@ func savePCM(filename string, data []int16) error {
 	for _, v := range data {
 		f.Write([]byte{byte(v), byte(v >> 8)})
 	}
+	return nil
+}
+
+func PcmToWav(pcmPath, wavPath string) error {
+	pcmData, err := os.ReadFile(pcmPath)
+	if err != nil {
+		return err
+	}
+	wavFile, err := os.Create(wavPath)
+	if err != nil {
+		return err
+	}
+	defer wavFile.Close()
+	var (
+		audioFormat   uint16 = 1
+		numChannels   uint16 = 1
+		sampleRate    uint32 = 8000
+		bitsPerSample uint16 = 16
+		byteRate             = sampleRate * uint32(numChannels) * uint32(bitsPerSample/8)
+		blockAlign    uint16 = numChannels * bitsPerSample / 8
+		dataLen              = uint32(len(pcmData))
+	)
+	wavFile.Write([]byte("RIFF"))
+	binary.Write(wavFile, binary.LittleEndian, uint32(36+dataLen))
+	wavFile.Write([]byte("WAVEfmt "))
+	binary.Write(wavFile, binary.LittleEndian, uint32(16))
+	binary.Write(wavFile, binary.LittleEndian, audioFormat)
+	binary.Write(wavFile, binary.LittleEndian, numChannels)
+	binary.Write(wavFile, binary.LittleEndian, sampleRate)
+	binary.Write(wavFile, binary.LittleEndian, byteRate)
+	binary.Write(wavFile, binary.LittleEndian, blockAlign)
+	binary.Write(wavFile, binary.LittleEndian, bitsPerSample)
+	wavFile.Write([]byte("data"))
+	binary.Write(wavFile, binary.LittleEndian, dataLen)
+	wavFile.Write(pcmData)
 	return nil
 }

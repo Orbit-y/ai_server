@@ -140,7 +140,12 @@ func main() {
 			if err := recorder.StopAndSavePCM("output.pcm"); err != nil {
 				statusLabel.SetText(fmt.Sprintf("停止录音失败: %v", err))
 			} else {
-				statusLabel.SetText("录音文件已保存为 output.pcm")
+				// 录音保存PCM后，自动转WAV
+				if err := PcmToWav("output.pcm", "output.wav"); err != nil {
+					statusLabel.SetText(fmt.Sprintf("PCM转WAV失败: %v", err))
+				} else {
+					statusLabel.SetText("录音文件已保存为 output.pcm 和 output.wav")
+				}
 			}
 		}
 	}
