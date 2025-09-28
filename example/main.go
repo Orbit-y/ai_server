@@ -1,6 +1,12 @@
 package main
 
 import (
+	"fmt"
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/app"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
+	"github.com/gordonklaus/portaudio"
 	"goportsipsdk/portsip"
 	"log"
 	"os"
@@ -22,6 +28,14 @@ const (
 )
 
 func main() {
+	if err := portaudio.Initialize(); err != nil {
+		log.Fatalf("Failed to initialize PortAudio: %v", err)
+	}
+
+	log.Printf("PortAudio initialized successfully")
+
+	defer portaudio.Terminate()
+
 	dispatcher, err := portsip.CreateAbstractCallbackDispatcher()
 	if err != nil {
 		log.Fatalf("Failed to create PortSIP AbstractCallbackDispatcher: %v", err)
@@ -105,6 +119,35 @@ func main() {
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+
+	a := app.New()
+	w := a.NewWindow("录音demo")
+	statusLabel := widget.NewLabel("")
+
+	recorder := NewRecorder()
+	btn := widget.NewButton("开始录音", nil)
+	btn.OnTapped = func() {
+		if !recorder.running {
+			recorder = NewRecorder()
+			btn.SetText("停止录音")
+			if err := recorder.Start(); err != nil {
+				statusLabel.SetText(fmt.Sprintf("录音失败: %v", err))
+			} else {
+				statusLabel.SetText("正在录音...")
+			}
+		} else {
+			btn.SetText("开始录音")
+			if err := recorder.StopAndSavePCM("output.pcm"); err != nil {
+				statusLabel.SetText(fmt.Sprintf("停止录音失败: %v", err))
+			} else {
+				statusLabel.SetText("录音文件已保存为 output.pcm")
+			}
+		}
+	}
+
+	w.SetContent(container.NewVBox(btn, statusLabel))
+	w.Resize(fyne.NewSize(400, 300)) // 设置窗口宽400高300
+	w.ShowAndRun()
 
 	<-c
 }
