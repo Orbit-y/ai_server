@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -152,6 +153,11 @@ func main() {
 	resultEntry := widget.NewMultiLineEntry()
 	resultEntry.SetPlaceHolder("你的问题：")
 
+	aiResultEntry := widget.NewMultiLineEntry()
+	aiResultEntry.SetPlaceHolder("回答将在这里显示")
+	aiResultEntry.Wrapping = fyne.TextWrapWord
+	aiResultEntry.SetMinRowsVisible(8) // 至少显示8行
+
 	recorder := NewRecorder()
 	btn := widget.NewButton("开始录音", nil)
 	btn.OnTapped = func() {
@@ -176,7 +182,7 @@ func main() {
 				} else {
 					statusLabel.SetText("录音文件已保存为 output/output.pcm 和 output/output.wav")
 					// 上传到S3
-					bucket := "pbxs3test"
+					bucket := "awstestpbx"
 					key := "output.wav"
 					statusLabel.SetText("正在上传到S3...")
 					if err := UploadToS3("output/output.wav", bucket, key); err != nil {
@@ -218,13 +224,45 @@ func main() {
 		}
 	}
 
+	aiBtn := widget.NewButton("分析", func() {
+		prompt := resultEntry.Text
+		if prompt == "" {
+			statusLabel.SetText("请先获取转写内容")
+			return
+		}
+		statusLabel.SetText("分析中...")
+		go func() {
+			answer, err := AskDeepSeek(prompt)
+			if err != nil {
+				aiResultEntry.SetText(fmt.Sprintf("分析失败: %v", err))
+				statusLabel.SetText(fmt.Sprintf("分析失败: %v", err))
+				return
+			}
+			aiResultEntry.SetText(answer)
+			statusLabel.SetText("语音合成中...")
+			err2 := SynthesizeSpeech(answer, "output/answer.mp3")
+			if err2 != nil {
+				statusLabel.SetText(fmt.Sprintf("语音合成失败: %v", err2))
+				return
+			}
+			statusLabel.SetText("分析完成，语音已生成，正在播放语音")
+			// 播放音频
+			go func() {
+				exec.Command("cmd", "/C", "start", "output\\answer.mp3").Run()
+			}()
+		}()
+	})
+
 	w.SetContent(container.NewVBox(
 		btn,
 		statusLabel,
 		resultEntry,
+		aiBtn,
+		aiResultEntry,
 	))
-	w.Resize(fyne.NewSize(400, 300))
+	w.Resize(fyne.NewSize(800, 600))
 	w.ShowAndRun()
+	<-c
 
 	<-c
 }
