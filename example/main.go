@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -15,7 +16,16 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 )
+
+type TranscribeResult struct {
+	Results struct {
+		Transcripts []struct {
+			Transcript string `json:"transcript"`
+		} `json:"transcripts"`
+	} `json:"results"`
+}
 
 var HANDLE *portsip.SDKHandle
 
@@ -139,6 +149,8 @@ func main() {
 	a := app.New()
 	w := a.NewWindow("录音demo")
 	statusLabel := widget.NewLabel("")
+	resultEntry := widget.NewMultiLineEntry()
+	resultEntry.SetPlaceHolder("你的问题：")
 
 	recorder := NewRecorder()
 	btn := widget.NewButton("开始录音", nil)
@@ -172,7 +184,7 @@ func main() {
 						return
 					}
 					statusLabel.SetText("上传成功，开始转写...")
-					jobName := "test-job"
+					jobName := fmt.Sprintf("job-%d", time.Now().UnixNano())
 					s3uri := "s3://" + bucket + "/" + key
 					uri, err := StartTranscribeJob(jobName, s3uri)
 					if err != nil {
@@ -185,13 +197,32 @@ func main() {
 						statusLabel.SetText(fmt.Sprintf("下载转写结果失败: %v", err))
 						return
 					}
+
+					jsonData, err := os.ReadFile(jsonPath)
+					if err != nil {
+						resultEntry.SetText("未找到转写内容")
+					} else {
+						var result TranscribeResult
+						if err := json.Unmarshal(jsonData, &result); err != nil {
+							resultEntry.SetText("未找到转写内容")
+						} else if len(result.Results.Transcripts) > 0 {
+							resultEntry.SetText(result.Results.Transcripts[0].Transcript)
+						} else {
+							resultEntry.SetText("未找到转写内容")
+						}
+					}
+
 					statusLabel.SetText(fmt.Sprintf("转写结果已保存: %s\n格式为JSON", jsonPath))
 				}
 			}
 		}
 	}
 
-	w.SetContent(container.NewVBox(btn, statusLabel))
+	w.SetContent(container.NewVBox(
+		btn,
+		statusLabel,
+		resultEntry,
+	))
 	w.Resize(fyne.NewSize(400, 300))
 	w.ShowAndRun()
 
