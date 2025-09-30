@@ -60,6 +60,9 @@ func refreshChatUI(chatBox *fyne.Container) {
 		qLabel.Wrapping = fyne.TextWrapWord
 		aLabel := widget.NewLabelWithStyle("A: "+msg.Answer, fyne.TextAlignLeading, fyne.TextStyle{})
 		aLabel.Wrapping = fyne.TextWrapWord
+		vbox := container.NewVBox(aLabel)
+		scroll := container.NewVScroll(vbox)
+		scroll.SetMinSize(fyne.NewSize(780, 100)) // 设置最小高度，可根据需要调整
 		playBtn := widget.NewButton("播放语音", func(mp3 string) func() {
 			return func() {
 				exec.Command("cmd", "/C", "start", mp3).Run()
