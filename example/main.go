@@ -41,28 +41,60 @@ const (
 	pcmpath   = "./park_default"
 )
 
-func DownloadTranscribeResult(url, wavPath string) (string, error) {
-	dir := filepath.Dir(wavPath)
-	outPath := filepath.Join(dir, "output.json")
+type ChatMessage struct {
+	Question  string
+	Answer    string
+	PCMPath   string
+	WAVPath   string
+	JSONPath  string
+	MP3Path   string
+	Timestamp string
+}
+
+var chatHistory []ChatMessage
+
+func refreshChatUI(chatBox *fyne.Container) {
+	chatBox.Objects = nil
+	for _, msg := range chatHistory {
+		qLabel := widget.NewLabelWithStyle("Q: "+msg.Question, fyne.TextAlignLeading, fyne.TextStyle{})
+		qLabel.Wrapping = fyne.TextWrapWord
+		aLabel := widget.NewLabelWithStyle("A: "+msg.Answer, fyne.TextAlignLeading, fyne.TextStyle{})
+		aLabel.Wrapping = fyne.TextWrapWord
+		playBtn := widget.NewButton("播放语音", func(mp3 string) func() {
+			return func() {
+				exec.Command("cmd", "/C", "start", mp3).Run()
+			}
+		}(msg.MP3Path))
+		chatBox.Add(container.NewVBox(
+			qLabel,
+			aLabel,
+			playBtn,
+			widget.NewLabel("时间: "+msg.Timestamp),
+			widget.NewSeparator(),
+		))
+	}
+	chatBox.Refresh()
+}
+
+func DownloadTranscribeResult(url, jsonPath string) (string, error) {
 	resp, err := http.Get(url)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
-	out, err := os.Create(outPath)
+	out, err := os.Create(jsonPath)
 	if err != nil {
 		return "", err
 	}
 	defer out.Close()
 	_, err = io.Copy(out, resp.Body)
-	return outPath, err
+	return jsonPath, err
 }
 
 func main() {
 	if err := portaudio.Initialize(); err != nil {
 		log.Fatalf("Failed to initialize PortAudio: %v", err)
 	}
-	log.Printf("PortAudio initialized successfully")
 	defer portaudio.Terminate()
 
 	dispatcher, err := portsip.CreateAbstractCallbackDispatcher()
@@ -102,12 +134,7 @@ func main() {
 	)
 
 	HANDLE.SetLicenseKey("PORTSIP_UC_LICENSE")
-
-	ret := HANDLE.SetRtpPortRange(41000, 43000)
-	if ret != 0 {
-		log.Fatalf("Failed to SetRtpPortRange: %d", ret)
-	}
-
+	HANDLE.SetRtpPortRange(41000, 43000)
 	HANDLE.SetSrtpPolicy(portsip.SRTP_POLICY_PREFER, true)
 	HANDLE.EnableSessionTimer(120, portsip.SESSION_REFERESH_UAC)
 
@@ -147,122 +174,147 @@ func main() {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
 
+	var chatBox *fyne.Container
 	a := app.New()
 	w := a.NewWindow("录音demo")
 	statusLabel := widget.NewLabel("")
-	resultEntry := widget.NewMultiLineEntry()
-	resultEntry.SetPlaceHolder("你的问题：")
+	isRecording := false
+	var stopChan chan struct{}
+	var recorder *Recorder
 
-	aiResultEntry := widget.NewMultiLineEntry()
-	aiResultEntry.SetPlaceHolder("回答将在这里显示")
-	aiResultEntry.Wrapping = fyne.TextWrapWord
-	aiResultEntry.SetMinRowsVisible(8) // 至少显示8行
+	oneClickBtn := widget.NewButton("开始对话", nil)
+	oneClickBtn.OnTapped = func() {
+		if !isRecording {
+			isRecording = true
+			oneClickBtn.SetText("停止")
+			stopChan = make(chan struct{})
+			go func() {
+				os.RemoveAll("output")
+				os.MkdirAll("output", 0755)
 
-	recorder := NewRecorder()
-	btn := widget.NewButton("开始录音", nil)
-	btn.OnTapped = func() {
-		if !recorder.running {
-			recorder = NewRecorder()
-			btn.SetText("停止录音")
-			if err := recorder.Start(); err != nil {
-				statusLabel.SetText(fmt.Sprintf("录音失败: %v", err))
-			} else {
-				statusLabel.SetText("正在录音...")
-			}
-		} else {
-			btn.SetText("开始录音")
-			// 录音结束，保存PCM
-			os.MkdirAll("output", 0755)
-			if err := recorder.StopAndSavePCM("output/output.pcm"); err != nil {
-				statusLabel.SetText(fmt.Sprintf("停止录音失败: %v", err))
-			} else {
-				// PCM转WAV
-				if err := PcmToWav("output/output.pcm", "output/output.wav"); err != nil {
-					statusLabel.SetText(fmt.Sprintf("PCM转WAV失败: %v", err))
-				} else {
-					statusLabel.SetText("录音文件已保存为 output/output.pcm 和 output/output.wav")
-					// 上传到S3
-					bucket := "awstestpbx"
-					key := "output.wav"
-					statusLabel.SetText("正在上传到S3...")
-					if err := UploadToS3("output/output.wav", bucket, key); err != nil {
-						statusLabel.SetText(fmt.Sprintf("上传S3失败: %v", err))
-						return
-					}
-					statusLabel.SetText("上传成功，开始转写...")
-					jobName := fmt.Sprintf("job-%d", time.Now().UnixNano())
-					s3uri := "s3://" + bucket + "/" + key
-					uri, err := StartTranscribeJob(jobName, s3uri)
-					if err != nil {
-						statusLabel.SetText(fmt.Sprintf("转写失败: %v", err.Error()))
-						return
-					}
-					statusLabel.SetText("转写完成，正在下载结果...")
-					jsonPath, err := DownloadTranscribeResult(uri, "output/output.wav")
-					if err != nil {
-						statusLabel.SetText(fmt.Sprintf("下载转写结果失败: %v", err))
-						return
-					}
+				timestamp := time.Now().Format("20060102_150405")
+				pcmPath := fmt.Sprintf("output/output_%s.pcm", timestamp)
+				wavPath := fmt.Sprintf("output/output_%s.wav", timestamp)
+				jsonPath := fmt.Sprintf("output/output_%s.json", timestamp)
+				mp3Path := fmt.Sprintf("output/answer_%s.mp3", timestamp)
 
-					jsonData, err := os.ReadFile(jsonPath)
-					if err != nil {
-						resultEntry.SetText("未找到转写内容")
-					} else {
-						var result TranscribeResult
-						if err := json.Unmarshal(jsonData, &result); err != nil {
-							resultEntry.SetText("未找到转写内容")
-						} else if len(result.Results.Transcripts) > 0 {
-							resultEntry.SetText(result.Results.Transcripts[0].Transcript)
-						} else {
-							resultEntry.SetText("未找到转写内容")
-						}
-					}
-
-					statusLabel.SetText(fmt.Sprintf("转写结果已保存: %s\n格式为JSON", jsonPath))
+				recorder = NewRecorder()
+				statusLabel.SetText("请提问...")
+				if err := recorder.Start(); err != nil {
+					statusLabel.SetText(fmt.Sprintf("录音失败: %v", err))
+					isRecording = false
+					oneClickBtn.SetText("开始对话")
+					return
 				}
-			}
+
+				select {
+				case <-time.After(60 * time.Second):
+				case <-stopChan:
+				}
+				recorder.StopAndSavePCM(pcmPath)
+				PcmToWav(pcmPath, wavPath)
+
+				statusLabel.SetText("上传到S3...")
+				bucket := "awstestpbx"
+				key := filepath.Base(wavPath)
+				if err := UploadToS3(wavPath, bucket, key); err != nil {
+					statusLabel.SetText(fmt.Sprintf("上传S3失败: %v", err))
+					isRecording = false
+					oneClickBtn.SetText("开始对话")
+					return
+				}
+
+				statusLabel.SetText("转写中...")
+				jobName := fmt.Sprintf("job-%s", timestamp)
+				s3uri := "s3://" + bucket + "/" + key
+				uri, err := StartTranscribeJob(jobName, s3uri)
+				if err != nil {
+					statusLabel.SetText(fmt.Sprintf("转写失败: %v", err))
+					isRecording = false
+					oneClickBtn.SetText("开始对话")
+					return
+				}
+				_, err = DownloadTranscribeResult(uri, jsonPath)
+				if err != nil {
+					statusLabel.SetText(fmt.Sprintf("下载转写结果失败: %v", err))
+					isRecording = false
+					oneClickBtn.SetText("开始对话")
+					return
+				}
+
+				jsonData, err := os.ReadFile(jsonPath)
+				var transcript string
+				if err == nil {
+					var result TranscribeResult
+					if err := json.Unmarshal(jsonData, &result); err == nil && len(result.Results.Transcripts) > 0 {
+						transcript = result.Results.Transcripts[0].Transcript
+					}
+				}
+				if transcript == "" {
+					statusLabel.SetText("未找到转写内容")
+					isRecording = false
+					oneClickBtn.SetText("开始对话")
+					return
+				}
+
+				messages := []map[string]string{
+					{"role": "system", "content": "请用自然对话语气回答，不要用md格式，要像一个客服一样。"},
+				}
+				for _, msg := range chatHistory {
+					messages = append(messages, map[string]string{"role": "user", "content": msg.Question})
+					messages = append(messages, map[string]string{"role": "assistant", "content": msg.Answer})
+				}
+				messages = append(messages, map[string]string{"role": "user", "content": transcript})
+
+				statusLabel.SetText("分析中...")
+				answer, err := AskDeepSeek(messages)
+				if err != nil {
+					statusLabel.SetText(fmt.Sprintf("分析失败: %v", err))
+					isRecording = false
+					oneClickBtn.SetText("开始对话")
+					return
+				}
+
+				statusLabel.SetText("语音合成中...")
+				if err := SynthesizeSpeech(answer, mp3Path); err != nil {
+					statusLabel.SetText(fmt.Sprintf("语音合成失败: %v", err))
+					isRecording = false
+					oneClickBtn.SetText("开始对话")
+					return
+				}
+
+				chatHistory = append(chatHistory, ChatMessage{
+					Question:  transcript,
+					Answer:    answer,
+					PCMPath:   pcmPath,
+					WAVPath:   wavPath,
+					JSONPath:  jsonPath,
+					MP3Path:   mp3Path,
+					Timestamp: timestamp,
+				})
+				refreshChatUI(chatBox)
+				statusLabel.SetText("完成！")
+				isRecording = false
+				oneClickBtn.SetText("开始对话")
+			}()
+		} else {
+			close(stopChan)
+			statusLabel.SetText("录音已停止，处理中...")
 		}
 	}
 
-	aiBtn := widget.NewButton("分析", func() {
-		prompt := resultEntry.Text
-		if prompt == "" {
-			statusLabel.SetText("请先获取转写内容")
-			return
-		}
-		statusLabel.SetText("分析中...")
-		go func() {
-			answer, err := AskDeepSeek(prompt)
-			if err != nil {
-				aiResultEntry.SetText(fmt.Sprintf("分析失败: %v", err))
-				statusLabel.SetText(fmt.Sprintf("分析失败: %v", err))
-				return
-			}
-			aiResultEntry.SetText(answer)
-			statusLabel.SetText("语音合成中...")
-			err2 := SynthesizeSpeech(answer, "output/answer.mp3")
-			if err2 != nil {
-				statusLabel.SetText(fmt.Sprintf("语音合成失败: %v", err2))
-				return
-			}
-			statusLabel.SetText("分析完成，语音已生成，正在播放语音")
-			// 播放音频
-			go func() {
-				exec.Command("cmd", "/C", "start", "output\\answer.mp3").Run()
-			}()
-		}()
-	})
+	chatBox = container.NewVBox()
+	scroll := container.NewVScroll(chatBox)
+	scroll.SetMinSize(fyne.NewSize(780, 500))       // 设置较高的高度
+	scroll.Direction = container.ScrollVerticalOnly // 只允许上下滚动
 
 	w.SetContent(container.NewVBox(
-		btn,
+		scroll, // 防止横向滚动条
 		statusLabel,
-		resultEntry,
-		aiBtn,
-		aiResultEntry,
+		oneClickBtn,
 	))
+
 	w.Resize(fyne.NewSize(800, 600))
 	w.ShowAndRun()
-	<-c
-
 	<-c
 }

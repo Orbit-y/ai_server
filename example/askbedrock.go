@@ -59,19 +59,15 @@ import (
 //	return result.Completion, nil
 //}
 
-func AskDeepSeek(question string) (string, error) {
+func AskDeepSeek(messages []map[string]string) (string, error) {
 	apiKey := os.Getenv("DEEPSEEK_API_KEY")
 	if apiKey == "" {
 		return "", fmt.Errorf("请先设置 DEEPSEEK_API_KEY 环境变量")
 	}
-
 	url := "https://api.deepseek.com/v1/chat/completions"
 	payload := map[string]interface{}{
-		"model": "deepseek-chat",
-		"messages": []map[string]string{
-			{"role": "system", "content": "请用自然对话语气回答，不要用md格式，要像一个客服一样。"},
-			{"role": "user", "content": question},
-		},
+		"model":      "deepseek-chat",
+		"messages":   messages,
 		"max_tokens": 256,
 	}
 	body, _ := json.Marshal(payload)
